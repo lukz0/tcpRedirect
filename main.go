@@ -6,38 +6,67 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 func main() {
 	selectedSourcePort, selectedTargetPort := getPortsFromUser()
-	selectedSourceAddr := strings.Join([]string{"127.0.0.1:", strconv.FormatUint(selectedSourcePort, 10)}, "")
-	selectedTargetAddr := strings.Join([]string{"127.0.0.1:", strconv.FormatUint(selectedTargetPort, 10)}, "")
-
-	tcpSourceAddr, err := net.ResolveTCPAddr("tcp", selectedSourceAddr)
+	selectedSourcePortString := strconv.FormatUint(selectedSourcePort, 10)
+	addresses, err := net.InterfaceAddrs()
 	if err != nil {
-		os.Stdout.Write([]byte("Error resolving source address\n"))
 		panic(err)
 	}
-	tcpTargetAddr, err := net.ResolveTCPAddr("tcp", selectedTargetAddr)
+	var (
+		resolvedSourceAddresses []*net.TCPAddr
+		resolvedAddressExists   bool
+	)
+	for _, a := range addresses {
+		a_string := strings.Split(a.String(), "/")[0]
+		if strings.ContainsRune(a_string, rune('.')) {
+			tcpSourceAddr, err := net.ResolveTCPAddr("tcp", strings.Join([]string{a_string, ":", selectedSourcePortString}, ""))
+			if err == nil {
+				resolvedAddressExists = true
+				resolvedSourceAddresses = append(resolvedSourceAddresses, tcpSourceAddr)
+			}
+		} else {
+			tcpSourceAddr, err := net.ResolveTCPAddr("tcp", strings.Join([]string{"[", a_string, "]:", selectedSourcePortString}, ""))
+			if err == nil {
+				resolvedAddressExists = true
+				resolvedSourceAddresses = append(resolvedSourceAddresses, tcpSourceAddr)
+			}
+		}
+	}
+	if !resolvedAddressExists {
+		panic("Failed to resolve source address")
+	}
+	tcpTargetAddr, err := net.ResolveTCPAddr("tcp", strings.Join([]string{"127.0.0.1:", strconv.FormatUint(selectedTargetPort, 10)}, ""))
 	if err != nil {
 		os.Stdout.Write([]byte("Error resolving target address\n"))
 		panic(err)
 	}
 
-	tcpListener, err := net.ListenTCP("tcp", tcpSourceAddr)
-	if err != nil {
-		os.Stdout.Write([]byte("Error listening to source address\n"))
-		panic(err)
-	}
-
-	os.Stdout.Write([]byte("Redirecting... Press \"Ctrl + c\" to exit\n"))
-	for {
-		conn, err := tcpListener.Accept()
+	var wg sync.WaitGroup
+	for _, tcpSourceAddr := range resolvedSourceAddresses {
+		tcpListener, err := net.ListenTCP("tcp", tcpSourceAddr)
 		if err != nil {
-			panic(err)
+			//os.Stdout.Write([]byte(strings.Join([]string{"Error listening to address: ", tcpSourceAddr.String(), "\n"}, "")))
+		} else {
+			wg.Add(1)
+			os.Stdout.Write([]byte(strings.Join([]string{"Listening to address: ", tcpSourceAddr.String(), "\n"}, "")))
+			go func(listener *net.TCPListener, wg_ptr *sync.WaitGroup) {
+				for {
+					conn, err := listener.Accept()
+					if err != nil {
+						wg_ptr.Done()
+						panic(err)
+					}
+					go handleConn(conn, tcpTargetAddr)
+				}
+			}(tcpListener, &wg)
 		}
-		go handleConn(conn, tcpTargetAddr)
 	}
+	os.Stdout.Write([]byte(strings.Join([]string{"Redirecting to ", tcpTargetAddr.String(), " Press \"Ctrl + c\" to exit\n"}, "")))
+	wg.Wait()
 }
 
 func handleConn(conn net.Conn, tcpTargetAddr *net.TCPAddr) {
