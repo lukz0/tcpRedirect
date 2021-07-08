@@ -1,1 +1,2 @@
-# tcpRedirect\nCan be used to redirect tcp connection to another port (can be used with minecraft)
+# tcpRedirect
+# Can be used to redirect tcp connection to another port (can be used with minecraft)
